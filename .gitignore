@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+
+# Meson build tree
+builddir/
+build/
+dist/

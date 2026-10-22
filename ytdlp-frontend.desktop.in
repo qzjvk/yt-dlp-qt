@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=yt-dlp Frontend
+GenericName=Video Downloader
+Comment=Download videos and audio from the web with yt-dlp
+Exec=@exec_path@
+Icon=ytdlp-frontend
+Terminal=false
+Categories=AudioVideo;
+Keywords=yt-dlp;youtube;download;video;audio;media;

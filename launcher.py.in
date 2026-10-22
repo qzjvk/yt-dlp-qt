@@ -1,0 +1,31 @@
+#!@PYTHON@
+import os
+import sys
+
+
+def _package_dir():
+    """Locate the directory containing the installed ytdlp_gui package.
+
+    The launcher lives in <prefix>/bin and the package in <prefix>/<libdir>,
+    so search the common lib layouts relative to this file.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(here, os.pardir, "lib", "python3", "dist-packages"),
+        os.path.join(here, os.pardir, "lib", "python3.13", "site-packages"),
+        os.path.join(here, os.pardir, "lib", "python3", "site-packages"),
+    ]
+    for c in candidates:
+        c = os.path.normpath(c)
+        if os.path.isdir(os.path.join(c, "ytdlp_gui")):
+            return c
+    return None
+
+
+_pkg = _package_dir()
+if _pkg is not None:
+    sys.path.insert(0, _pkg)
+
+from ytdlp_gui.__main__ import main  # noqa: E402
+
+sys.exit(main())
