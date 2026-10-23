@@ -1,3 +1,3 @@
-"""yt-dlp GUI frontend built with PyQt6."""
+"""yt-dlp GUI frontend built with GTK 3 and PyGObject."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

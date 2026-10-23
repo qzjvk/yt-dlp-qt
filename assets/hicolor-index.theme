@@ -1,6 +1,7 @@
 [Icon Theme]
 Name=hicolor
 DisplayName=Default
+Directories=16x16/apps,22x22/apps,24x24/apps,32x32/apps,48x48/apps,64x64/apps,128x128/apps,256x256/apps
 
 [16x16/apps]
 Size=16

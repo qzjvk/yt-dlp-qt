@@ -1,4 +1,5 @@
 #!@PYTHON@
+import glob
 import os
 import sys
 
@@ -6,19 +7,25 @@ import sys
 def _package_dir():
     """Locate the directory containing the installed ytdlp_gui package.
 
-    The launcher lives in <prefix>/bin and the package in <prefix>/<libdir>,
-    so search the common lib layouts relative to this file.
+    The launcher lives in <prefix>/bin and the package in <prefix>/<libdir>.
+    Check the running Python's own lib directory first, then any other Python
+    version found under the prefix.
     """
     here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.path.join(here, os.pardir, "lib", "python3", "dist-packages"),
-        os.path.join(here, os.pardir, "lib", "python3.13", "site-packages"),
-        os.path.join(here, os.pardir, "lib", "python3", "site-packages"),
-    ]
-    for c in candidates:
-        c = os.path.normpath(c)
-        if os.path.isdir(os.path.join(c, "ytdlp_gui")):
-            return c
+    prefix = os.path.normpath(os.path.join(here, os.pardir))
+    version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+
+    candidates = []
+    for libdir in ("lib", "lib64"):
+        base = os.path.join(prefix, libdir)
+        candidates.append(os.path.join(base, version, "site-packages"))
+        candidates.append(os.path.join(base, version, "dist-packages"))
+        for pattern in ("python*/site-packages", "python*/dist-packages"):
+            candidates.extend(sorted(glob.glob(os.path.join(base, pattern))))
+
+    for candidate in candidates:
+        if os.path.isdir(os.path.join(candidate, "ytdlp_gui")):
+            return candidate
     return None
 
 

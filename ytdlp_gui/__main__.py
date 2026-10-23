@@ -1,37 +1,19 @@
-"""Application entry point.
-
-The app deliberately does not force a style or a stylesheet: Qt picks the
-platform style and the palette from the system (on Linux the gtk3 platform
-theme plugin follows the active GTK theme), so the app looks native in
-whatever theme the desktop is using.
-"""
+"""Application entry point for the GTK 3 frontend."""
 
 import os
 import sys
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QIcon, QPalette
-from PyQt6.QtWidgets import QApplication
-
 from . import __version__
-from .main_window import MainWindow
 
 APP_ID = "ytdlp-frontend"
+APPLICATION_ID = "io.github.ytdlp_frontend"
 
 
-def app_icon():
-    """Return the application icon, preferring the system icon theme."""
-    icon = QIcon.fromTheme(APP_ID)
-    if not icon.isNull():
-        return icon
+def _icon_file():
+    """Return a fallback icon path, preferring the installed data dir."""
     here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        # source tree (development)
-        os.path.join(here, "..", "assets", "icon.png"),
-    ]
-    # installed data dir (meson install): XDG_DATA_HOME default first, then
-    # each XDG_DATA_DIRS entry.
-    data_dirs = [os.path.expanduser("~/.local/share")]
+    candidates = [os.path.join(here, "..", "assets", "icon.png")]
+    data_dirs = [os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")]
     data_dirs += os.environ.get(
         "XDG_DATA_DIRS", "/usr/local/share:/usr/share"
     ).split(":")
@@ -41,48 +23,76 @@ def app_icon():
     for path in candidates:
         path = os.path.normpath(path)
         if os.path.exists(path):
-            return QIcon(path)
-    return QIcon()
+            return path
+    return None
 
 
-def main():
-    QApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+def _load_gtk():
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: F401
+    except (ImportError, ValueError) as exc:
+        sys.stderr.write(
+            "GTK 3 is required. Install PyGObject and the GTK 3 bindings, e.g.\n"
+            "  Debian/Ubuntu: sudo apt install python3-gi gir1.2-gtk-3.0\n"
+            f"({exc})\n"
+        )
+        return None
+    return Gdk, Gio, GLib, Gtk
+
+
+def _set_default_icon(Gtk, GLib):
+    theme = Gtk.IconTheme.get_default()
+    if theme is not None and theme.has_icon(APP_ID):
+        Gtk.Window.set_default_icon_name(APP_ID)
+        return
+    icon_path = _icon_file()
+    if icon_path is not None:
+        try:
+            Gtk.Window.set_default_icon_from_file(icon_path)
+            return
+        except GLib.Error:
+            pass
+    Gtk.Window.set_default_icon_name(APP_ID)
+
+
+def _on_activate(application):
+    # Imported lazily so a missing GTK installation produces the friendly
+    # error above instead of a traceback at import time.
+    from gi.repository import GLib, Gtk
+
+    from .main_window import MainWindow
+
+    windows = application.get_windows()
+    if windows:
+        windows[0].present()
+        return
+    _set_default_icon(Gtk, GLib)
+    window = MainWindow(application=application)
+    window.show_all()
+
+
+def main(argv=None):
+    loaded = _load_gtk()
+    if loaded is None:
+        return 1
+    Gdk, Gio, GLib, Gtk = loaded
+
+    GLib.set_prgname(APP_ID)
+    GLib.set_application_name("yt-dlp Frontend")
+    # Sets WM_CLASS, so the desktop can match the window to its .desktop file.
+    Gdk.set_program_class(APP_ID)
+
+    application = Gtk.Application(
+        application_id=APPLICATION_ID,
+        flags=Gio.ApplicationFlags.FLAGS_NONE,
     )
-    app = QApplication(sys.argv)
-    app.setApplicationName("yt-dlp Frontend")
-    app.setOrganizationName("YtDlpFrontend")
-    app.setApplicationVersion(__version__)
-    # Lets the desktop environment match this app to its .desktop entry
-    # (also sets WM_CLASS for taskbar grouping).
-    app.setDesktopFileName(APP_ID)
-    app.setWindowIcon(app_icon())
-    _force_black_text(app)
-
-    win = MainWindow()
-    win.show()
-    return app.exec()
-
-
-def _force_black_text(app):
-    """Force all text to black so it stays readable in every state.
-
-    The system theme's text color is too light to read in some states —
-    disabled widgets and inactive windows in particular — so pin the text
-    roles to black for every color group.
-    """
-    pal = app.palette()
-    black = QColor("black")
-    for group in (
-        QPalette.ColorGroup.Normal,
-        QPalette.ColorGroup.Active,
-        QPalette.ColorGroup.Inactive,
-        QPalette.ColorGroup.Disabled,
-    ):
-        pal.setColor(group, QPalette.ColorRole.Text, black)
-        pal.setColor(group, QPalette.ColorRole.WindowText, black)
-        pal.setColor(group, QPalette.ColorRole.ButtonText, black)
-    app.setPalette(pal)
+    application.set_version(__version__)
+    application.connect("activate", _on_activate)
+    return application.run(argv if argv is not None else sys.argv)
 
 
 if __name__ == "__main__":

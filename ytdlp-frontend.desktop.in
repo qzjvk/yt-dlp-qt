@@ -7,5 +7,7 @@ Comment=Download videos and audio from the web with yt-dlp
 Exec=@exec_path@
 Icon=ytdlp-frontend
 Terminal=false
+StartupNotify=true
+StartupWMClass=ytdlp-frontend
 Categories=AudioVideo;
 Keywords=yt-dlp;youtube;download;video;audio;media;
