@@ -1,6 +1,6 @@
 project(
   'ytdlp-frontend',
-  version: '2.0.0',
+  version: '2.1.0',
   license: 'MIT',
   meson_version: '>= 1.1.0',
 )
@@ -16,6 +16,7 @@ py.install_sources(
   'ytdlp_gui/__main__.py',
   'ytdlp_gui/main_window.py',
   'ytdlp_gui/downloader.py',
+  'ytdlp_gui/history.py',
   'ytdlp_gui/settings.py',
   subdir: 'ytdlp_gui',
 )

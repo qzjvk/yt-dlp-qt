@@ -10,6 +10,14 @@ Qt dependency.
   (`Ctrl+Return` in the URL box works too)
 - **Metadata preview** — fetch title, uploader, duration, views and likes
   before downloading
+- **Playlist item selection** — load a playlist and pick exactly which items
+  to queue, with title, channel and duration shown for every entry
+- **Persistent download history** — completed, failed and cancelled downloads
+  are saved across sessions, with filtering, re-queueing, folder opening and
+  clearing
+- **Subtitles & metadata** — download subtitles in chosen languages
+  (including auto-generated ones), embed subtitles, and embed metadata,
+  thumbnails or chapters
 - **Format selection**
   - Best available (video + audio)
   - Specific resolution (2160p → 144p)
@@ -90,7 +98,9 @@ Installed locations (user prefix `~/.local`):
 | Icons | `~/.local/share/icons/hicolor/<size>/apps/ytdlp-frontend.png` |
 
 Settings are stored in `~/.config/ytdlp-frontend/settings.ini`
-(or `$XDG_CONFIG_HOME/ytdlp-frontend/settings.ini`).
+(or `$XDG_CONFIG_HOME/ytdlp-frontend/settings.ini`). Download history is
+stored in `~/.local/state/ytdlp-frontend/history.json`
+(or `$XDG_STATE_HOME/ytdlp-frontend/history.json`).
 
 ## Project layout
 
@@ -107,7 +117,8 @@ ytdlp_gui/
     __init__.py
     __main__.py       Gtk.Application entry point (main())
     main_window.py    main window, queue management, UI
-    downloader.py     DownloadWorker / PreviewWorker (threads + subprocess)
+    downloader.py     DownloadWorker / PreviewWorker / PlaylistWorker
+    history.py        persistent download history (JSON, XDG state dir)
     settings.py       INI settings wrapper
 ```
 

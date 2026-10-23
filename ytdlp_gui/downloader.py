@@ -264,3 +264,55 @@ class PreviewWorker(_ProcessWorker):
         else:
             lines = [l for l in out.stdout.strip().splitlines() if l.strip()]
             self._emit("finished", True, lines[0] if lines else "")
+
+
+class PlaylistWorker(_ProcessWorker):
+    """Fetches the flat item list of a playlist as JSON."""
+
+    __gsignals__ = {
+        "finished": (GObject.SignalFlags.RUN_FIRST, None, (bool, str, str)),
+    }
+
+    def __init__(self, url, cookies="", proxy=""):
+        super().__init__()
+        self.url = url
+        self.cookies = cookies
+        self.proxy = proxy
+
+    def _run(self):
+        cmd_prefix = find_ytdlp()
+        if not cmd_prefix:
+            self._emit("finished", False, "yt-dlp executable not found", "")
+            return
+        cmd = cmd_prefix + [
+            "--flat-playlist",
+            "--dump-single-json",
+            "--no-warnings",
+            self.url,
+        ]
+        if self.cookies:
+            cmd += ["--cookies", self.cookies]
+        if self.proxy:
+            cmd += ["--proxy", self.proxy]
+        try:
+            out = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+            )
+        except Exception as exc:
+            self._emit("finished", False, str(exc), "")
+            return
+        if out.returncode != 0:
+            lines = [l for l in out.stderr.strip().splitlines() if l.strip()]
+            self._emit(
+                "finished",
+                False,
+                lines[-1] if lines else "Failed to fetch playlist",
+                "",
+            )
+        else:
+            self._emit("finished", True, "", out.stdout)

@@ -1,5 +1,6 @@
 """Main window for the yt-dlp GUI frontend (GTK 3)."""
 
+import json
 import os
 import shlex
 import subprocess
@@ -15,7 +16,13 @@ gi.require_version("Pango", "1.0")
 
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
-from .downloader import DownloadWorker, PreviewWorker, ytdlp_version  # noqa: E402
+from .downloader import (  # noqa: E402
+    DownloadWorker,
+    PlaylistWorker,
+    PreviewWorker,
+    ytdlp_version,
+)
+from .history import History  # noqa: E402
 from .settings import Settings  # noqa: E402
 
 RESOLUTIONS = ["2160", "1440", "1080", "720", "576", "480", "360", "240", "144"]
@@ -126,6 +133,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self.tasks: list[Task] = []
         self.active: set[Task] = set()
         self.preview_worker: PreviewWorker | None = None
+        self.playlist_worker: PlaylistWorker | None = None
+        self.history = History()
+        self.history_dialog = None
+        self._history_store = None
+        self._history_view = None
+        self._history_search = None
         self._quitting = False
         self._log_mark = None
 
@@ -220,18 +233,28 @@ class MainWindow(Gtk.ApplicationWindow):
         self.preview_btn.set_tooltip_text(
             "Fetch title, uploader, duration and more without downloading"
         )
+        self.playlist_btn = Gtk.Button(label="Playlist…")
+        self.playlist_btn.set_tooltip_text(
+            "Load the first URL as a playlist and choose which items to queue"
+        )
         self.add_btn = Gtk.Button(label="Add to Queue")
         self.add_btn.set_tooltip_text("Add the URLs above to the download queue (Ctrl+Return)")
         self.add_btn.set_can_default(True)
         self.add_btn.get_style_context().add_class("suggested-action")
         self.playlist_cb = Gtk.CheckButton(label="Include playlists")
+        self.playlist_cb.set_tooltip_text(
+            "When adding a URL directly, download the whole playlist.\n"
+            "Use Playlist… to choose individual items instead."
+        )
         row.pack_start(self.preview_btn, False, False, 0)
+        row.pack_start(self.playlist_btn, False, False, 0)
         row.pack_start(self.add_btn, False, False, 0)
         row.pack_start(Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL), True, True, 0)
         row.pack_end(self.playlist_cb, False, False, 0)
         box.pack_start(row, False, False, 0)
 
         self.preview_btn.connect("clicked", self._preview)
+        self.playlist_btn.connect("clicked", self._load_playlist)
         self.add_btn.connect("clicked", self.add_to_queue)
         frame.add(box)
         return frame
@@ -314,6 +337,38 @@ class MainWindow(Gtk.ApplicationWindow):
         out_group.add(out_box)
         panel.pack_start(out_group, False, False, 0)
 
+        # --- Subtitles & metadata
+        subs_group = _frame("Subtitles & metadata")
+        subs_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        subs_box.set_border_width(8)
+        self.subs_cb = Gtk.CheckButton(label="Download subtitles")
+        self.subs_langs_edit = Gtk.Entry()
+        self.subs_langs_edit.set_width_chars(8)
+        self.subs_langs_edit.set_placeholder_text("en.*,de")
+        self.subs_langs_edit.set_tooltip_text(
+            "Comma-separated language codes or regexes, e.g. en.*,de"
+        )
+        self.subs_langs_label = Gtk.Label(label="Subtitle languages:", xalign=0)
+        self.auto_subs_cb = Gtk.CheckButton(label="Include auto-generated")
+        self.embed_subs_cb = Gtk.CheckButton(label="Embed subtitles")
+        self.embed_metadata_cb = Gtk.CheckButton(label="Embed metadata")
+        self.embed_thumbnail_cb = Gtk.CheckButton(label="Embed thumbnail")
+        self.embed_chapters_cb = Gtk.CheckButton(label="Embed chapters")
+        subs_box.pack_start(self.subs_cb, False, False, 0)
+        subs_box.pack_start(self.subs_langs_label, False, False, 0)
+        subs_box.pack_start(self.subs_langs_edit, False, False, 0)
+        subs_box.pack_start(self.auto_subs_cb, False, False, 0)
+        subs_box.pack_start(self.embed_subs_cb, False, False, 0)
+        subs_box.pack_start(
+            Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 3
+        )
+        subs_box.pack_start(self.embed_metadata_cb, False, False, 0)
+        subs_box.pack_start(self.embed_thumbnail_cb, False, False, 0)
+        subs_box.pack_start(self.embed_chapters_cb, False, False, 0)
+        self.subs_cb.connect("toggled", self._on_subtitles_toggled)
+        subs_group.add(subs_box)
+        panel.pack_start(subs_group, False, False, 0)
+
         # --- Advanced
         adv_group = _frame("Advanced")
         adv_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -388,6 +443,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.open_btn = Gtk.Button(label="Open Folder")
         self.remove_btn = Gtk.Button(label="Remove")
         self.clear_btn = Gtk.Button(label="Clear Completed")
+        self.history_btn = Gtk.Button(label="History")
+        self.history_btn.set_tooltip_text("Show saved download history")
         for button in (
             self.pause_btn,
             self.resume_btn,
@@ -395,6 +452,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.open_btn,
             self.remove_btn,
             self.clear_btn,
+            self.history_btn,
         ):
             button.get_style_context().add_class("compact-button")
             bar.pack_start(button, False, False, 0)
@@ -469,6 +527,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.open_btn.connect("clicked", self._open_folder)
         self.remove_btn.connect("clicked", self._remove_selected)
         self.clear_btn.connect("clicked", self._clear_completed)
+        self.history_btn.connect("clicked", self._show_history)
         clear_log_btn.connect("clicked", self._clear_log)
         self.max_concurrent_spin.connect("value-changed", lambda _spin: self._start_next())
         return box
@@ -541,8 +600,16 @@ class MainWindow(Gtk.ApplicationWindow):
         self.frag_spin.set_value(settings.getint("fragments", 4))
         self.extra_edit.set_text(settings.get("extra_args", ""))
         self.max_concurrent_spin.set_value(settings.getint("max_concurrent", 1))
+        self.subs_cb.set_active(settings.getbool("subtitles", False))
+        self.subs_langs_edit.set_text(settings.get("subtitle_langs", "en.*"))
+        self.auto_subs_cb.set_active(settings.getbool("auto_subs", False))
+        self.embed_subs_cb.set_active(settings.getbool("embed_subs", False))
+        self.embed_metadata_cb.set_active(settings.getbool("embed_metadata", False))
+        self.embed_thumbnail_cb.set_active(settings.getbool("embed_thumbnail", False))
+        self.embed_chapters_cb.set_active(settings.getbool("embed_chapters", False))
         self.adv_toggle.set_active(settings.getbool("advanced", False))
         self._on_format_changed(self.format_combo)
+        self._on_subtitles_toggled(self.subs_cb)
 
         width = settings.getint("window_width", 1080)
         height = settings.getint("window_height", 720)
@@ -566,6 +633,13 @@ class MainWindow(Gtk.ApplicationWindow):
         settings.set("fragments", self.frag_spin.get_value_as_int())
         settings.set("extra_args", self.extra_edit.get_text().strip())
         settings.set("max_concurrent", self.max_concurrent_spin.get_value_as_int())
+        settings.set("subtitles", self.subs_cb.get_active())
+        settings.set("subtitle_langs", self.subs_langs_edit.get_text().strip())
+        settings.set("auto_subs", self.auto_subs_cb.get_active())
+        settings.set("embed_subs", self.embed_subs_cb.get_active())
+        settings.set("embed_metadata", self.embed_metadata_cb.get_active())
+        settings.set("embed_thumbnail", self.embed_thumbnail_cb.get_active())
+        settings.set("embed_chapters", self.embed_chapters_cb.get_active())
         settings.set("advanced", self.adv_toggle.get_active())
         width, height = self.get_size()
         settings.set("window_width", width)
@@ -584,6 +658,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.quality_combo.set_sensitive(mode == 1)
         self.audio_combo.set_sensitive(mode == 2)
         self.audio_quality_combo.set_sensitive(mode == 2)
+
+    def _on_subtitles_toggled(self, button):
+        active = button.get_active()
+        self.subs_langs_label.set_sensitive(active)
+        self.subs_langs_edit.set_sensitive(active)
+        self.auto_subs_cb.set_sensitive(active)
+        self.embed_subs_cb.set_sensitive(active)
 
     def _browse_dir(self):
         dialog = Gtk.FileChooserDialog(
@@ -695,6 +776,20 @@ class MainWindow(Gtk.ApplicationWindow):
         fragments = self.frag_spin.get_value_as_int()
         if fragments:
             args += ["--concurrent-fragments", str(fragments)]
+        if self.subs_cb.get_active():
+            args.append("--write-subs")
+            if self.auto_subs_cb.get_active():
+                args.append("--write-auto-subs")
+            languages = self.subs_langs_edit.get_text().strip() or "en.*"
+            args += ["--sub-langs", languages]
+            if self.embed_subs_cb.get_active():
+                args.append("--embed-subs")
+        if self.embed_metadata_cb.get_active():
+            args.append("--embed-metadata")
+        if self.embed_thumbnail_cb.get_active():
+            args.append("--embed-thumbnail")
+        if self.embed_chapters_cb.get_active():
+            args.append("--embed-chapters")
         extra = self.extra_edit.get_text().strip()
         if extra:
             args += shlex.split(extra)
@@ -759,8 +854,20 @@ class MainWindow(Gtk.ApplicationWindow):
         if not urls:
             self.status_label.set_text("Paste at least one URL first.")
             return
-        for url in urls:
-            task = Task(url=url, name=url, row=len(self.tasks))
+        self._enqueue(urls)
+        self.url_edit.get_buffer().set_text("")
+        self.status_label.set_text(f"Added {len(urls)} item(s) to the queue.")
+
+    def _enqueue(self, urls, names=None):
+        """Append URLs (and optional display names) to the queue."""
+        added = 0
+        for index, url in enumerate(urls):
+            if not url:
+                continue
+            name = url
+            if names is not None and index < len(names) and names[index]:
+                name = names[index]
+            task = Task(url=url, name=name, row=len(self.tasks))
             self.tasks.append(task)
             self.store.append(
                 [
@@ -776,10 +883,11 @@ class MainWindow(Gtk.ApplicationWindow):
                     task,
                 ]
             )
-        self.url_edit.get_buffer().set_text("")
-        self.status_label.set_text(f"Added {len(urls)} item(s) to the queue.")
-        self._update_statusbar()
-        self._start_next()
+            added += 1
+        if added:
+            self._update_statusbar()
+            self._start_next()
+        return added
 
     def _update_row(self, task):
         if task.row < 0 or task.row >= self.store.iter_n_children(None):
@@ -908,10 +1016,25 @@ class MainWindow(Gtk.ApplicationWindow):
             task.status = "cancelled"
         else:
             task.status = "failed"
+        self._record_history(task, message)
         self._update_row(task)
         self._update_statusbar()
         self.status_label.set_text(f"{task.name[:60]}: {message}")
         self._start_next()
+
+    def _record_history(self, task, message):
+        if task.status not in ("completed", "cancelled", "failed"):
+            return
+        self.history.add(
+            url=task.url,
+            name=task.name,
+            status=task.status,
+            destination=task.destination or "",
+            size=task.size or "",
+            message=message or "",
+        )
+        if self.history_dialog is not None:
+            self._refresh_history_store()
 
     # ------------------------------------------------------------- actions
 
@@ -972,6 +1095,206 @@ class MainWindow(Gtk.ApplicationWindow):
             self._reindex()
             self._update_statusbar()
 
+    # ------------------------------------------------------------- history
+
+    def _show_history(self, _button=None):
+        if self.history_dialog is not None:
+            self.history_dialog.present()
+            return
+
+        dialog = Gtk.Dialog(
+            title="Download History",
+            transient_for=self,
+            modal=False,
+        )
+        dialog.set_default_size(900, 540)
+        dialog.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        dialog.connect("response", lambda d, _response: d.destroy())
+
+        content = dialog.get_content_area()
+        content.set_border_width(10)
+        content.set_spacing(8)
+
+        search = Gtk.SearchEntry()
+        search.set_placeholder_text("Filter by title, URL, path or status")
+        content.pack_start(search, False, False, 0)
+
+        store = Gtk.ListStore(str, str, str, str, str, str, object)
+        view = Gtk.TreeView(model=store)
+        view.set_headers_visible(True)
+        view.get_selection().set_mode(Gtk.SelectionMode.MULTIPLE)
+
+        for index, label, width, expand in (
+            (0, "Date", 135, False),
+            (1, "Name", 260, True),
+            (2, "Status", 90, False),
+            (3, "Size", 90, False),
+            (4, "Saved to", 300, True),
+        ):
+            renderer = Gtk.CellRendererText()
+            renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
+            if index == 2:
+                column = Gtk.TreeViewColumn(
+                    label, renderer, text=index, foreground=5
+                )
+            else:
+                column = Gtk.TreeViewColumn(label, renderer, text=index)
+            if width > 0:
+                column.set_fixed_width(width)
+            if expand:
+                column.set_expand(True)
+            view.append_column(column)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_shadow_type(Gtk.ShadowType.IN)
+        scroll.add(view)
+        content.pack_start(scroll, True, True, 0)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        add_btn = Gtk.Button(label="Add to Queue")
+        open_btn = Gtk.Button(label="Open Folder")
+        remove_btn = Gtk.Button(label="Remove")
+        clear_btn = Gtk.Button(label="Clear History")
+        add_btn.set_tooltip_text("Queue the selected download URLs again")
+        open_btn.set_tooltip_text("Open the folder containing the selected file")
+        remove_btn.set_tooltip_text("Remove the selected history entries")
+        clear_btn.set_tooltip_text("Delete the entire download history")
+        for button in (add_btn, open_btn, remove_btn):
+            actions.pack_start(button, False, False, 0)
+        actions.pack_start(
+            Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL), True, True, 0
+        )
+        actions.pack_end(clear_btn, False, False, 0)
+        content.pack_start(actions, False, False, 0)
+
+        def selected_entries():
+            model, paths = view.get_selection().get_selected_rows()
+            return [model[path][6] for path in paths]
+
+        def requeue(_button):
+            entries = selected_entries()
+            urls = [entry.get("url") for entry in entries if entry.get("url")]
+            names = [
+                entry.get("name") or entry.get("url")
+                for entry in entries
+                if entry.get("url")
+            ]
+            if not urls:
+                return
+            self._enqueue(urls, names)
+            self.status_label.set_text(
+                f"Added {len(urls)} item(s) from history to the queue."
+            )
+
+        def open_folder(_button):
+            entries = selected_entries()
+            if not entries:
+                return
+            destination = entries[0].get("destination") or ""
+            if destination:
+                open_path(os.path.dirname(destination))
+            else:
+                outdir = (
+                    self.dir_edit.get_text().strip()
+                    or os.path.expanduser("~")
+                )
+                open_path(outdir)
+
+        def remove(_button):
+            entries = selected_entries()
+            if not entries:
+                return
+            self.history.remove_entries(entries)
+            self._refresh_history_store()
+
+        def clear(_button):
+            if not self.history.entries:
+                return
+            confirm = Gtk.MessageDialog(
+                transient_for=dialog,
+                flags=Gtk.DialogFlags.MODAL,
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.YES_NO,
+                text="Clear download history?",
+            )
+            confirm.format_secondary_text(
+                "This removes all saved history entries. Downloaded files "
+                "are not deleted."
+            )
+            confirm.set_default_response(Gtk.ResponseType.NO)
+            response = confirm.run()
+            confirm.destroy()
+            if response == Gtk.ResponseType.YES:
+                self.history.clear()
+                self._refresh_history_store()
+
+        add_btn.connect("clicked", requeue)
+        open_btn.connect("clicked", open_folder)
+        remove_btn.connect("clicked", remove)
+        clear_btn.connect("clicked", clear)
+        search.connect(
+            "search-changed",
+            lambda _entry: self._refresh_history_store(search.get_text()),
+        )
+        view.connect(
+            "row-activated",
+            lambda _view, _path, _column: open_folder(None),
+        )
+
+        self.history_dialog = dialog
+        self._history_store = store
+        self._history_view = view
+        self._history_search = search
+        dialog.connect("destroy", self._on_history_destroyed)
+        self._refresh_history_store()
+        dialog.show_all()
+
+    def _on_history_destroyed(self, _dialog):
+        self.history_dialog = None
+        self._history_store = None
+        self._history_view = None
+        self._history_search = None
+
+    def _refresh_history_store(self, text=None):
+        if self._history_store is None:
+            return
+        if text is None:
+            text = (
+                self._history_search.get_text()
+                if self._history_search is not None
+                else ""
+            )
+        needle = text.strip().lower()
+        store = self._history_store
+        store.clear()
+        for entry in self.history.entries:
+            haystack = " ".join(
+                str(entry.get(key, ""))
+                for key in ("name", "url", "destination", "status", "message")
+            ).lower()
+            if needle and needle not in haystack:
+                continue
+            try:
+                date_text = time.strftime(
+                    "%Y-%m-%d %H:%M",
+                    time.localtime(float(entry.get("time", 0))),
+                )
+            except (TypeError, ValueError, OSError):
+                date_text = ""
+            status = entry.get("status") or ""
+            store.append(
+                [
+                    date_text,
+                    entry.get("name") or entry.get("url") or "",
+                    status,
+                    entry.get("size") or "",
+                    entry.get("destination") or "",
+                    STATUS_COLORS.get(status, "#ffffff"),
+                    entry,
+                ]
+            )
+
     def _on_row_activated(self, _tree, path, _column):
         try:
             task = self.store[path][COL_TASK]
@@ -983,6 +1306,197 @@ class MainWindow(Gtk.ApplicationWindow):
             task.status = "pending"
             self._update_row(task)
             self._start_next()
+
+    # ------------------------------------------------------------ playlist
+
+    def _load_playlist(self, _button=None):
+        lines = [
+            line.strip()
+            for line in self._url_text().splitlines()
+            if line.strip()
+        ]
+        if not lines:
+            self.status_label.set_text("Paste a playlist URL first.")
+            return
+        if self.playlist_worker is not None:
+            return
+        self.playlist_btn.set_sensitive(False)
+        self.status_label.set_text("Loading playlist…")
+        self.playlist_worker = PlaylistWorker(
+            lines[0],
+            cookies=self.cookies_edit.get_text().strip(),
+            proxy=self.proxy_edit.get_text().strip(),
+        )
+        self.playlist_worker.connect("finished", self._on_playlist_loaded)
+        self.playlist_worker.start()
+
+    def _on_playlist_loaded(self, _worker, ok, error, payload):
+        self.playlist_btn.set_sensitive(True)
+        self.playlist_worker = None
+        if not ok:
+            self._warn("Playlist failed", error)
+            return
+        try:
+            data = json.loads(payload) if payload.strip() else {}
+        except ValueError as exc:
+            self._warn("Playlist failed", f"Invalid playlist data: {exc}")
+            return
+        if isinstance(data, list):
+            entries = data
+            title = "Playlist"
+        else:
+            entries = data.get("entries") or []
+            title = data.get("title") or data.get("id") or "Playlist"
+        items = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            url = entry.get("webpage_url") or entry.get("url")
+            if not url:
+                continue
+            if (
+                not str(url).startswith(("http://", "https://"))
+                and entry.get("ie_key") == "Youtube"
+                and entry.get("id")
+            ):
+                url = f"https://www.youtube.com/watch?v={entry['id']}"
+            item_title = (
+                entry.get("title") or entry.get("id") or str(url)
+            )
+            channel = (
+                entry.get("uploader")
+                or entry.get("channel")
+                or entry.get("uploader_id")
+                or ""
+            )
+            duration = self._format_duration(entry.get("duration"))
+            items.append((str(url), str(item_title), str(channel), duration))
+        if not items:
+            self._warn(
+                "Playlist",
+                "No playlist items found for this URL.\n"
+                "Use Add to Queue to download a single video.",
+            )
+            return
+        self._show_playlist_dialog(str(title), items)
+
+    @staticmethod
+    def _format_duration(seconds):
+        try:
+            total = int(float(seconds))
+        except (TypeError, ValueError):
+            return ""
+        if total <= 0:
+            return ""
+        hours, remainder = divmod(total, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        return f"{minutes}:{secs:02d}"
+
+    def _show_playlist_dialog(self, title, items):
+        # Selected, #, title, channel, duration, URL
+        store = Gtk.ListStore(bool, str, str, str, str, str)
+        for index, (url, item_title, channel, duration) in enumerate(items, 1):
+            store.append([True, str(index), item_title, channel, duration, url])
+
+        dialog = Gtk.Dialog(
+            title="Select playlist items",
+            transient_for=self,
+            modal=True,
+        )
+        dialog.set_default_size(820, 540)
+        dialog.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
+        add_btn = dialog.add_button("Add Selected", Gtk.ResponseType.ACCEPT)
+        add_btn.get_style_context().add_class("suggested-action")
+        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+
+        content = dialog.get_content_area()
+        content.set_border_width(10)
+        content.set_spacing(8)
+
+        heading = Gtk.Label()
+        heading.set_markup(
+            "<b>%s</b>" % GLib.markup_escape_text(title)
+        )
+        heading.set_xalign(0)
+        heading.set_line_wrap(True)
+        content.pack_start(heading, False, False, 0)
+        summary = Gtk.Label(
+            label=f"{len(items)} item(s). Uncheck anything you do not want.",
+            xalign=0,
+        )
+        summary.get_style_context().add_class("ytdlp-dim")
+        content.pack_start(summary, False, False, 0)
+
+        view = Gtk.TreeView(model=store)
+        view.set_headers_visible(True)
+
+        toggle = Gtk.CellRendererToggle()
+        column = Gtk.TreeViewColumn("", toggle, active=0)
+        column.set_fixed_width(34)
+        view.append_column(column)
+        for index, label, fixed in (
+            (1, "#", 42),
+            (2, "Title", -1),
+            (3, "Channel", 160),
+            (4, "Duration", 80),
+        ):
+            renderer = Gtk.CellRendererText()
+            renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
+            col = Gtk.TreeViewColumn(label, renderer, text=index)
+            if fixed > 0:
+                col.set_fixed_width(fixed)
+            else:
+                col.set_expand(True)
+            view.append_column(col)
+
+        def on_toggle(_renderer, path):
+            store[path][0] = not store[path][0]
+
+        def update_add_state(*_args):
+            add_btn.set_sensitive(any(row[0] for row in store))
+
+        toggle.connect("toggled", on_toggle)
+        store.connect("row-changed", update_add_state)
+
+        utility = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        select_all = Gtk.Button(label="Select All")
+        select_none = Gtk.Button(label="Select None")
+        utility.pack_start(select_all, False, False, 0)
+        utility.pack_start(select_none, False, False, 0)
+        content.pack_start(utility, False, False, 0)
+
+        def set_all(value):
+            for row in store:
+                row[0] = value
+
+        select_all.connect("clicked", lambda _b: set_all(True))
+        select_none.connect("clicked", lambda _b: set_all(False))
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_shadow_type(Gtk.ShadowType.IN)
+        scroll.add(view)
+        content.pack_start(scroll, True, True, 0)
+
+        update_add_state()
+        dialog.show_all()
+        response = dialog.run()
+        selected = [
+            (row[5], row[2]) for row in store if row[0]
+        ] if response == Gtk.ResponseType.ACCEPT else []
+        dialog.destroy()
+
+        if response != Gtk.ResponseType.ACCEPT or not selected:
+            return
+        urls = [url for url, _title in selected]
+        names = [item_title for _url, item_title in selected]
+        self._enqueue(urls, names)
+        self.url_edit.get_buffer().set_text("")
+        self.status_label.set_text(
+            f"Added {len(selected)} playlist item(s) to the queue."
+        )
 
     # ------------------------------------------------------------- preview
 
